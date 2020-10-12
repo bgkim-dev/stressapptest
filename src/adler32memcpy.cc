@@ -529,8 +529,8 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
   // Number of 32-bit words which are not added to a1/a2 in the main loop.
   uint32 remaining_words = (size_in_bytes % 64) / 4;
 
-  // Since we are moving 48 bytes at a time number of iterations = total size/64
-  // is value of counter.  
+  // Since we are moving 64 bytes at a time number of iterations = total size/64
+  // is value of counter.
   uint32 blocks = size_in_bytes / 64;
 
   uint64 *dst = dstmem64;
