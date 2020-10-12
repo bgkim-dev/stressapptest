@@ -523,6 +523,7 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
       {1, 1, 0, 0};
 
   if ((size_in_bytes >> 19) > 0) {
+    // Size is too large. Must be less than 2^19 bytes = 512 KB.
     return false;
   }
 
