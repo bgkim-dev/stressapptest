@@ -399,7 +399,7 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
   // that there is no problem with memory this just mean that data was copied
   // from src to dst and checksum was calculated successfully).
   return true;
-#elif defined(STRESSAPPTEST_CPU_ARMV7A) && defined(__ARM_NEON__)
+#elif defined(STRESSAPPTEST_CPU_ARMV7A) && (defined(__ARM_NEON__) || defined(__ARM_NEON))
   // Elements 0 to 3 are used for holding checksum terms a1, a2,
   // b1, b2 respectively. These elements are filled by asm code.
   // Checksum is seeded with the null checksum.
@@ -504,6 +504,189 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
       // Input registers.
       : [src] "r"(src), [dst] "r"(dst), [blocks] "r"(blocks) , [crc] "r"(checksum_arr)
       : "memory", "cc", "r3", "r4", "r5", "r6", "q0", "q1", "q8","q9","q10", "q11", "q12","q13","q14","q15"
+  );  // asm.
+
+  if (checksum != NULL) {
+    checksum->Set(checksum_arr[0], checksum_arr[1],
+                  checksum_arr[2], checksum_arr[3]);
+  }
+
+  // Everything went fine, so return true (this does not mean
+  // that there is no problem with memory this just mean that data was copied
+  // from src to dst and checksum was calculated successfully).
+  return true;
+#elif defined(STRESSAPPTEST_CPU_AARCH64) && (defined(__ARM_NEON__) || defined(__ARM_NEON))
+  // Elements 0 to 3 are used for holding checksum terms a1, a2,
+  // b1, b2 respectively. These elements are filled by asm code.
+  // Checksum is seeded with the null checksum.
+  volatile uint64 checksum_arr[] __attribute__ ((aligned(16))) =
+      {1, 1, 0, 0};
+
+  if ((size_in_bytes >> 19) > 0) {
+    return false;
+  }
+
+  // Number of 32-bit words which are not added to a1/a2 in the main loop.
+  uint32 remaining_words = (size_in_bytes % 64) / 4;
+
+  // Since we are moving 48 bytes at a time number of iterations = total size/64
+  // is value of counter.  
+  uint32 blocks = size_in_bytes / 64;
+
+  uint64 *dst = dstmem64;
+  uint64 *src = srcmem64;
+
+  #define src_r    "x13"
+  #define dst_r    "x14"
+  #define blocks_r "x15"
+  #define crc_r    "x16"
+  #define rem_r    "x17"
+
+  asm volatile (
+      // Save the first 8 bytes of v8 to v15 on stack
+      "stp d8, d9, [sp, #-16]!;   \n"
+      "stp d10, d11, [sp, #-16]!; \n"
+      "stp d12, d13, [sp, #-16]!; \n"
+      "stp d14, d15, [sp, #-16]!; \n"
+
+      "mov " src_r ", %[src];              \n"
+      "mov " dst_r ", %[dst];              \n"
+      "mov " crc_r ", %[crc];              \n"
+      "mov " blocks_r ", %x[blocks];       \n"
+      "mov " rem_r ", %x[remaining_words]; \n"
+
+      // Loop over block count.
+      "cmp " blocks_r ", #0; \n"   // Compare counter to zero.
+      "ble END;              \n"
+
+      // Preload upcoming cacheline.
+      "PRFM pldl1strm, [" src_r "];	   \n"
+      "PRFM pldl1strm, [" src_r ", #0x20]; \n"
+
+      // Init checksum
+      "ld1 {v0.4s}, [" crc_r "]; \n"
+      "movi v1.4s, #0; \n"
+
+      // Start of the loop which copies 64 bytes from source to dst each time.
+      "TOP: \n"
+
+      // Make 4 moves each of 16 bytes from srcmem to vX registers.
+      // We are using 2 words out of 4 words in each vX register,
+      // word index 0 and word index 2. We'll swizzle them in a bit.
+      // Copy it.
+      "ld1 {v8.4s, v9.4s, v10.4s, v11.4s}, [" src_r "],#64; \n"
+      "st1 {v8.4s, v9.4s, v10.4s, v11.4s}, [" dst_r "],#64; \n"
+
+      // Arrange it.
+      "eor v12.16b, v12.16b, v12.16b; \n"
+      "eor v13.16b, v13.16b, v13.16b; \n"
+      "eor v14.16b, v14.16b, v14.16b; \n"
+      "eor v15.16b, v15.16b, v15.16b; \n"
+
+      // This exchanges words 1,3 in the filled registers with
+      // words 0,2 in the empty registers.
+      "eor v2.16b, v2.16b, v2.16b;  \n"
+      "trn2 v12.4s,  v8.4s, v12.4s; \n"
+      "trn1  v8.4s,  v8.4s,  v2.4s; \n"
+      "trn2 v13.4s,  v9.4s, v13.4s; \n"
+      "trn1  v9.4s,  v9.4s,  v2.4s; \n"
+      "trn2 v14.4s, v10.4s, v14.4s; \n"
+      "trn1 v10.4s, v10.4s,  v2.4s; \n"
+      "trn2 v15.4s, v11.4s, v15.4s; \n"
+      "trn1 v11.4s, v11.4s,  v2.4s; \n"
+
+      // Sum into v0, then into v1.
+      // Repeat this for v8 - v13.
+      // Overflow can occur only if there are more
+      // than 2^16 additions => more than 2^17 words => more than 2^19 bytes so
+      // if size_in_bytes > 2^19 then overflow occurs.
+      "add v0.2d, v0.2d, v8.2d;	 \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+      "add v0.2d, v0.2d, v12.2d; \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+      "add v0.2d, v0.2d, v9.2d;	 \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+      "add v0.2d, v0.2d, v13.2d; \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+
+      "add v0.2d, v0.2d, v10.2d; \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+      "add v0.2d, v0.2d, v14.2d; \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+      "add v0.2d, v0.2d, v11.2d; \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+      "add v0.2d, v0.2d, v15.2d; \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+
+      // Increment counter and loop.
+      "sub " blocks_r ", " blocks_r ", #1; \n"
+      "cmp " blocks_r ", #0; \n"   // Compare counter to zero.
+      "bgt TOP;	\n"
+
+      // Now only remaining_words 32-bit words are left.
+      // make a loop, add first two words to a1 and next two to a2 (just like
+      // above loop, the only extra thing we are doing is rechecking
+      // rDX (=remaining_words) everytime we add a number to a1/a2.
+      "REM_IS_STILL_NOT_ZERO: \n"
+      // Unless remaining_words becomes less than 4 words(16 bytes)
+      // there is not much issue and remaining_words will always
+      // be a multiple of four by assumption.
+      "cmp " rem_r ", #4; \n"
+      // In case for some weird reasons if remaining_words becomes
+      // less than 4 but not zero then also break the code and go off to END.
+      "blt END; \n"
+      // Otherwise just go on and copy data in chunks of 4-words at a time till
+      // whole data (<64 bytes) is copied.
+
+      // Make 1 move of 16 bytes from srcmem to a vX register.
+      // We are using 2 words out of 4 words in a vX register,
+      // word index 0 and word index 2. We'll swizzle them in a bit.
+      // Copy it.
+      "ld1 {v8.4s}, [" src_r "], #16; \n"
+      "st1 {v8.4s}, [" dst_r "], #16; \n"
+
+      // Arrange it.
+      "eor v12.16b, v12.16b, v12.16b; \n"
+
+      // This exchanges words 1,3 in the filled registers with
+      // words 0,2 in the empty registers.
+      "eor v2.16b, v2.16b, v2.16b;  \n"
+      "trn2 v12.4s,  v8.4s, v12.4s; \n"
+      "trn1  v8.4s,  v8.4s,  v2.4s; \n"
+
+      // Sum into v0, then into v1.
+      // Repeat this for v8 - v13.
+      // Overflow can occur only if there are more
+      // than 2^16 additions => more than 2^17 words => more than 2^19 bytes so
+      // if size_in_bytes > 2^19 then overflow occurs.
+      "add v0.2d, v0.2d, v8.2d;	 \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+      "add v0.2d, v0.2d, v12.2d; \n"
+      "add v1.2d, v1.2d, v0.2d;	 \n"
+
+      // Decrement %rDX by 4 since %rDX is number of 32-bit
+      // words left after considering all 64-byte units.
+      "sub " rem_r ", " rem_r ", #4; \n"
+      "b REM_IS_STILL_NOT_ZERO; \n"
+
+      "END:\n"
+      // Report checksum values A and B (both right now are two concatenated
+      // 64 bit numbers and have to be converted to 64 bit numbers)
+      // seems like Adler128 (since size of each part is 4 byte rather than
+      // 1 byte).
+      "st1 {v0.2d, v1.2d}, [" crc_r "]; \n"
+
+      // Restore the first 8 bytes of v8 to v15 from stack
+      "ldp d14, d15, [sp], #16; \n"
+      "ldp d12, d13, [sp], #16; \n"
+      "ldp d10, d11, [sp], #16; \n"
+      "ldp d8, d9, [sp],# 16;   \n"
+
+      // Output registers.
+      :
+      // Input registers.
+      : [src] "r" (src), [dst] "r" (dst), [blocks] "r" (blocks) , [crc] "r" (checksum_arr), [remaining_words] "r"  (remaining_words)
+      : "memory", "cc", "x13", "x14", "x15", "x16", "x17", "v0", "v1", "v2", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"
   );  // asm.
 
   if (checksum != NULL) {
