@@ -20,6 +20,8 @@
 
 #include "os.h"
 
+#include <asm/hwcap.h>
+#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/types.h>
@@ -49,6 +51,32 @@
 #include "sattypes.h"
 #include "error_diag.h"
 #include "clock.h"
+
+#if defined(STRESSAPPTEST_CPU_AARCH64)
+// Detecting if NEON is enabled.
+// https://developer.arm.com/documentation/den0013/d/introducing-neon/neon-c-compiler-and-assembler/detecting-neon
+static bool has_vector() {
+#define HWCAP_NEON 4096
+  int fd_auxv = open("/proc/self/auxv", O_RDONLY);
+  bool has_vector = false;
+
+  if (fd_auxv >= 0) {
+    Elf64_auxv_t auxv;
+    size_t nbytes = sizeof(Elf64_auxv_t);
+
+    while (read(fd_auxv, &auxv, nbytes) == nbytes) {
+      if (AT_HWCAP == auxv.a_type) {
+	has_vector = (auxv.a_un.a_val & HWCAP_ASIMD) != 0;
+	break;
+      }
+    }
+
+    close(fd_auxv);
+  }
+
+  return has_vector;
+}
+#endif
 
 // OsLayer initialization.
 OsLayer::OsLayer() {
@@ -214,6 +242,8 @@ void OsLayer::GetFeatures() {
   // For now assume neon and don't run -W if you don't have it.
   has_vector_ = true; // NEON.
 #warning "Unsupported CPU type ARMV7A: unable to determine feature set."
+#elif defined(STRESSAPPTEST_CPU_AARCH64)
+  has_vector_ = has_vector(); // NEON.
 #else
 #warning "Unsupported CPU type: unable to determine feature set."
 #endif
