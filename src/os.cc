@@ -56,13 +56,12 @@
 // Detecting if NEON is enabled.
 // https://developer.arm.com/documentation/den0013/d/introducing-neon/neon-c-compiler-and-assembler/detecting-neon
 static bool has_vector() {
-#define HWCAP_NEON 4096
   int fd_auxv = open("/proc/self/auxv", O_RDONLY);
   bool has_vector = false;
 
   if (fd_auxv >= 0) {
     Elf64_auxv_t auxv;
-    size_t nbytes = sizeof(Elf64_auxv_t);
+    ssize_t nbytes = sizeof(Elf64_auxv_t);
 
     while (read(fd_auxv, &auxv, nbytes) == nbytes) {
       if (AT_HWCAP == auxv.a_type) {
