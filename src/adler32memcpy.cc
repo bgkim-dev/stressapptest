@@ -558,7 +558,7 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
 
       // Loop over block count.
       "cmp " blocks_r ", #0;      \n"   // Compare counter to zero.
-      "ble REM_IS_STILL_NOT_ZERO; \n"   // if zero, check for remaining words
+      "ble REM_IS_STILL_NOT_ZERO; \n"   // If <= zero, check for remaining words
 
       // Preload upcoming cacheline.
       "PRFM pldl1strm, [" src_r "];	       \n"
