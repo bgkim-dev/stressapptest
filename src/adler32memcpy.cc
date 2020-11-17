@@ -428,18 +428,17 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
       "mov " crc_r ", %[crc]; 		\n"
       "mov " blocks_r ", %[blocks]; 	\n"
 
+      // Init checksum
+      "vldm " crc_r ", {q0};            \n"
+      "vmov.i32 q1, #0;                 \n"
+      
       // Loop over block count.
       "cmp " blocks_r ", #0; 	\n"   // Compare counter to zero.
       "ble END;			\n"
 
-
       // Preload upcoming cacheline.
       "pld [" src_r ", #0x0];	\n"
       "pld [" src_r ", #0x20];	\n"
-
-      // Init checksum
-      "vldm " crc_r ", {q0};		\n"
-      "vmov.i32 q1, #0;			\n"
 
       // Start of the loop which copies 48 bytes from source to dst each time.
       "TOP:			\n"
