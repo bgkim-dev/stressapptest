@@ -555,6 +555,10 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
       "mov " blocks_r ", %x[blocks];       \n"
       "mov " rem_r ", %x[remaining_words]; \n"
 
+      // Init checksum
+      "ld1 {v0.4s}, [" crc_r "]; \n"
+      "movi v1.4s, #0; \n"
+      
       // Loop over block count.
       "cmp " blocks_r ", #0;      \n"   // Compare counter to zero.
       "ble REM_IS_STILL_NOT_ZERO; \n"   // If <= zero, check for remaining words
@@ -562,10 +566,6 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
       // Preload upcoming cacheline.
       "PRFM pldl1strm, [" src_r "];	       \n"
       "PRFM pldl1strm, [" src_r ", #0x20]; \n"
-
-      // Init checksum
-      "ld1 {v0.4s}, [" crc_r "]; \n"
-      "movi v1.4s, #0; \n"
 
       // Start of the loop which copies 64 bytes from source to dst each time.
       "TOP: \n"
